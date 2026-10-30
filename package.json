@@ -3,10 +3,13 @@
   "version": "0.0.0",
   "license": "MIT",
   "scripts": {
-    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
+    "preinstall": "node -e \"if (!process.env.npm_config_user_agent || !process.env.npm_config_user_agent.startsWith('pnpm/')) { console.error('Use pnpm instead'); process.exit(1); }\"",
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
     "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
+    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./frontend\" --filter \"./scripts\" --if-present run typecheck",
+    "dev:api": "node artifacts/api-server/build.mjs && node --env-file=.env artifacts/api-server/dist/index.mjs",
+    "dev:frontend": "npx pnpm --filter @workspace/placemate run dev",
+    "seed": "node --env-file=.env artifacts/api-server/scripts/init-neon.mjs"
   },
   "private": true,
   "dependencies": {
@@ -15,5 +18,13 @@
   "devDependencies": {
     "prettier": "^3.9.10",
     "typescript": "~5.9.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@swc/core",
+      "esbuild",
+      "msw",
+      "unrs-resolver"
+    ]
   }
 }

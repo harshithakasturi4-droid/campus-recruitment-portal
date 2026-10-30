@@ -1,4 +1,4 @@
-import { createContext, type FormEvent, type ReactNode, useContext, useMemo, useState } from 'react';
+import { createContext, type FormEvent, type ReactNode, useContext, useEffect, useMemo, useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
@@ -8,9 +8,12 @@ import { Activity, ArrowDown, ArrowLeft, ArrowRight, Bell, BriefcaseBusiness, Bu
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip as ChartTooltip } from 'recharts';
 import { type AppStatus, type Application, type Company, type DemoState, type Job, type Role, type Student, statuses, loadDemo, resetDemo, saveDemo } from './demo';
 import NotFound from '@/pages/not-found';
+import { apiRequest, setCsrfToken, type ApiApplication, type ApiJob, type ApiStudent } from './api';
+import { AdminLoginPage, AdminWorkspacePage } from './AdminPages';
 
 const queryClient = new QueryClient();
-type ContextValue = { role: Role; setRole: (role: Role) => void; demo: DemoState; updateDemo: (next: DemoState) => void; mode: 'demo' | 'api'; setMode: (mode: 'demo' | 'api') => void; };
+type AuthUser = { id: string; email: string; role: Role; fullName: string };
+type ContextValue = { role: Role; setRole: (role: Role) => void; demo: DemoState; updateDemo: (next: DemoState) => void; mode: 'demo' | 'api'; setMode: (mode: 'demo' | 'api') => void; auth: AuthUser | null; student: ApiStudent | null; authLoading: boolean; authRestoreError: string; setSession: (user: AuthUser | null, profile?: ApiStudent | null, csrf?: string | null) => void; };
 const PMContext = createContext<ContextValue | null>(null);
 function usePM() { const ctx = useContext(PMContext); if (!ctx) throw new Error('PlaceMate context is unavailable'); return ctx; }
 
@@ -47,7 +50,7 @@ const nav: Record<Role, { label: string; path: string; icon: typeof LayoutDashbo
   ],
 };
 const routeMeta: { path: string; role?: Role; title: string; kind: string }[] = [
-  { path: '/', title: 'Welcome to PlaceMate', kind: 'landing' }, { path: '/login', title: 'Sign in', kind: 'login' }, { path: '/register', title: 'Create your account', kind: 'register' }, { path: '/unauthorized', title: 'Access restricted', kind: 'unauthorized' },
+  { path: '/', title: 'Welcome to PlaceMate', kind: 'landing' }, { path: '/login', title: 'Sign in', kind: 'login' }, { path: '/register', title: 'Create your account', kind: 'register' }, { path: '/admin/login', title: 'Administrator sign in', kind: 'admin-login' }, { path: '/unauthorized', title: 'Access restricted', kind: 'unauthorized' },
   { path: '/student', role: 'student', title: 'Your placement journey', kind: 'student-home' }, { path: '/student/profile', role: 'student', title: 'My profile', kind: 'profile' }, { path: '/student/jobs', role: 'student', title: 'Find your next role', kind: 'jobs' }, { path: '/student/jobs/:id', role: 'student', title: 'Role details', kind: 'job-detail' },
   { path: '/student/applications', role: 'student', title: 'Application tracker', kind: 'applications' }, { path: '/student/applications/:id', role: 'student', title: 'Application details', kind: 'application-detail' }, { path: '/student/interviews', role: 'student', title: 'Interview schedule', kind: 'interviews' }, { path: '/student/resume-review', role: 'student', title: 'Resume review', kind: 'resume' }, { path: '/student/career-guide', role: 'student', title: 'Career guide', kind: 'career-guide' }, { path: '/student/notifications', role: 'student', title: 'Notifications', kind: 'notifications' },
   { path: '/recruiter', role: 'recruiter', title: 'Hiring overview', kind: 'recruiter-home' }, { path: '/recruiter/company', role: 'recruiter', title: 'Company profile', kind: 'company' }, { path: '/recruiter/jobs', role: 'recruiter', title: 'Manage jobs', kind: 'recruiter-jobs' }, { path: '/recruiter/jobs/new', role: 'recruiter', title: 'Create a job', kind: 'job-form' }, { path: '/recruiter/jobs/:id/edit', role: 'recruiter', title: 'Edit job', kind: 'job-form' }, { path: '/recruiter/jobs/:id/applicants', role: 'recruiter', title: 'Job applicants', kind: 'recruiter-applicants' }, { path: '/recruiter/applicants', role: 'recruiter', title: 'Candidates', kind: 'recruiter-applicants' }, { path: '/recruiter/applicants/:id', role: 'recruiter', title: 'Candidate profile', kind: 'applicant-detail' }, { path: '/recruiter/interviews', role: 'recruiter', title: 'Interview schedule', kind: 'interviews' }, { path: '/recruiter/analytics', role: 'recruiter', title: 'Hiring analytics', kind: 'analytics' },
@@ -55,13 +58,57 @@ const routeMeta: { path: string; role?: Role; title: string; kind: string }[] = 
 ];
 
 function App() {
-  const [role, setRoleState] = useState<Role>(() => (localStorage.getItem('placemate-role') as Role) || 'student');
+  const [role, setRoleState] = useState<Role>(() => localStorage.getItem('placemate-mode') === 'api' ? 'student' : (localStorage.getItem('placemate-role') as Role) || 'student');
   const [demo, setDemo] = useState<DemoState>(() => loadDemo());
   const [mode, setModeState] = useState<'demo' | 'api'>(() => localStorage.getItem('placemate-mode') === 'api' ? 'api' : 'demo');
+  const [auth, setAuth] = useState<AuthUser | null>(null);
+  const [student, setStudent] = useState<ApiStudent | null>(null);
+  const [authLoading, setAuthLoading] = useState(() => localStorage.getItem('placemate-mode') === 'api');
+  const [authRestoreError, setAuthRestoreError] = useState('');
   const updateDemo = (next: DemoState) => { setDemo(next); saveDemo(next); };
   const setRole = (value: Role) => { setRoleState(value); localStorage.setItem('placemate-role', value); };
-  const setMode = (value: 'demo' | 'api') => { setModeState(value); localStorage.setItem('placemate-mode', value); };
-  return <QueryClientProvider client={queryClient}><TooltipProvider><WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}><PMContext.Provider value={{ role, setRole, demo, updateDemo, mode, setMode }}><Router /></PMContext.Provider></WouterRouter><Toaster /></TooltipProvider></QueryClientProvider>;
+  const setSession = (user: AuthUser | null, profile: ApiStudent | null = null, csrf?: string | null) => {
+    setAuth(user);
+    setStudent(profile);
+    if (user) {
+      setRoleState(user.role);
+      localStorage.setItem('placemate-role', user.role);
+    } else {
+      setRoleState('student');
+    }
+    if (user) setAuthRestoreError('');
+    if (csrf !== undefined) setCsrfToken(csrf);
+  };
+  const setMode = (value: 'demo' | 'api') => {
+    setModeState(value);
+    localStorage.setItem('placemate-mode', value);
+    if (value === 'api') {
+      setAuthLoading(true);
+      setAuthRestoreError('');
+    } else {
+      setAuthLoading(false);
+    }
+  };
+  useEffect(() => {
+    if (mode !== 'api') return;
+    let active = true;
+    apiRequest<{ user: AuthUser; student?: ApiStudent; csrfToken: string | null }>('/auth/me')
+      .then(({ user, student: profile, csrfToken }) => {
+        if (active) setSession(user, profile, csrfToken);
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setSession(null, null, null);
+          const message = error instanceof Error ? error.message : '';
+          setAuthRestoreError(/401|authentication required/i.test(message) ? '' : 'Could not restore a live session. Check that the API is available, then sign in.');
+        }
+      })
+      .finally(() => {
+        if (active) setAuthLoading(false);
+      });
+    return () => { active = false; };
+  }, [mode]);
+  return <QueryClientProvider client={queryClient}><TooltipProvider><WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}><PMContext.Provider value={{ role, setRole, demo, updateDemo, mode, setMode, auth, student, authLoading, authRestoreError, setSession }}><Router /></PMContext.Provider></WouterRouter><Toaster /></TooltipProvider></QueryClientProvider>;
 }
 
 function Router() {
@@ -74,32 +121,45 @@ function Router() {
 function Boundary({ resetKey, children }: { resetKey: string; children: ReactNode }) { return <ErrorBoundary resetKey={resetKey}>{children}</ErrorBoundary>; }
 
 function AppShell({ children }: { children: ReactNode }) {
-  const { role, setRole, mode, setMode } = usePM();
+  const { role, setRole, mode, setMode, auth, setSession } = usePM();
   const [loc, setLoc] = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const publicPage = ['/', '/login', '/register', '/unauthorized'].includes(loc);
+  const [logoutError, setLogoutError] = useState('');
+  const publicPage = ['/', '/login', '/register', '/admin/login', '/unauthorized'].includes(loc);
   const active = nav[role].find(item => loc === item.path || (item.path !== '/student' && item.path !== '/recruiter' && item.path !== '/admin' && loc.startsWith(item.path + '/')));
+  const logout = async () => {
+    setLogoutError('');
+    try {
+      await apiRequest('/auth/logout', { method: 'POST' });
+      setSession(null, null, null);
+      setLoc('/login');
+    } catch (error) {
+      setLogoutError(error instanceof Error ? error.message : 'The server could not invalidate your session.');
+    }
+  };
   if (publicPage) return <div className="public-root">{children}</div>;
   return <div className="app-frame">
     <aside className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`} aria-label="Main navigation">
       <Link href="/" className="brand" data-testid="link-brand"><span className="brand-mark"><GraduationCap size={21} /></span><span>placemate<span className="brand-period">.</span></span></Link>
-      <div className="demo-note"><span className="live-dot" /> DEMO WORKSPACE</div>
-      <div className="role-label">WORKING AS</div>
-      <label className="role-select-label" htmlFor="role-switch">Role preview</label>
-      <select id="role-switch" className="role-select" value={role} onChange={e => { setRole(e.target.value as Role); setLoc(nav[e.target.value as Role][0].path); setMobileOpen(false); }} data-testid="select-role">
-        <option value="student">Student · Aarav Mehta</option><option value="recruiter">Recruiter · Leena Rao</option><option value="admin">Placement office</option>
-      </select>
+      <div className="demo-note"><span className="live-dot" /> {mode === 'demo' ? 'DEMO WORKSPACE' : 'LIVE ACCOUNT'}</div>
+      {mode === 'demo' && <>
+        <div className="role-label">WORKING AS</div>
+        <label className="role-select-label" htmlFor="role-switch">Role preview</label>
+        <select id="role-switch" className="role-select" value={role} onChange={e => { setRole(e.target.value as Role); setLoc(nav[e.target.value as Role][0].path); setMobileOpen(false); }} data-testid="select-role">
+          <option value="student">Student · Aarav Mehta</option><option value="recruiter">Recruiter · Leena Rao</option><option value="admin">Placement office</option>
+        </select>
+      </>}
       <div className="nav-scroll">{['Workspace', 'Career tools', 'Hiring', 'Insights', 'Placement office', 'Operations'].map(group => {
         const items = nav[role].filter(item => item.group === group);
         if (!items.length) return null;
         return <div className="nav-group" key={group}><div className="nav-group-label">{group}</div>{items.map(item => { const Icon = item.icon; return <Link key={item.path} href={item.path} className={`nav-item ${active?.path === item.path ? 'nav-active' : ''}`} onClick={() => setMobileOpen(false)} data-testid={`link-nav-${item.path.split('/').filter(Boolean).join('-')}`}><Icon size={17} strokeWidth={1.8} /><span>{item.label}</span>{item.label === 'Notifications' && <span className="nav-count">2</span>}</Link>; })}</div>;
       })}</div>
-      <div className="sidebar-footer"><div className="avatar avatar-light">{role === 'student' ? 'AM' : role === 'recruiter' ? 'LR' : 'PO'}</div><div className="account-copy"><b>{role === 'student' ? 'Aarav Mehta' : role === 'recruiter' ? 'Leena Rao' : 'Placement office'}</b><span>{roleTitles[role]} · Demo</span></div><button type="button" className="icon-button" aria-label="Sign out" onClick={() => setLoc('/login')} data-testid="button-signout"><LogOut size={17} /></button></div>
+      <div className="sidebar-footer"><div className="avatar avatar-light">{mode === 'api' ? initials(auth?.fullName || 'Student') : role === 'student' ? 'AM' : role === 'recruiter' ? 'LR' : 'PO'}</div><div className="account-copy"><b>{mode === 'api' ? auth?.fullName || 'Student' : role === 'student' ? 'Aarav Mehta' : role === 'recruiter' ? 'Leena Rao' : 'Placement office'}</b><span>{mode === 'api' ? auth?.email : `${roleTitles[role]} · Demo`}</span></div><button type="button" className="icon-button" aria-label="Sign out" onClick={() => mode === 'api' ? void logout() : setLoc('/login')} data-testid="button-signout"><LogOut size={17} /></button></div>
     </aside>
     {mobileOpen && <button className="mobile-scrim" aria-label="Close navigation" onClick={() => setMobileOpen(false)} data-testid="button-close-navigation" />}
     <main className="main-area">
       <header className="topbar"><button className="mobile-menu" type="button" aria-label="Open navigation" onClick={() => setMobileOpen(true)} data-testid="button-open-navigation"><Menu size={20} /></button><div className="crumb">{roleTitles[role]} <span>/</span> {active?.label || 'Workspace'}</div><div className="topbar-right"><div className="mode-pill"><span className={`mode-dot ${mode === 'api' ? 'mode-dot-api' : ''}`} /><span>{mode === 'demo' ? 'Demo data' : 'API mode'}</span><button type="button" className="mode-switch" onClick={() => setMode(mode === 'demo' ? 'api' : 'demo')} data-testid="button-toggle-mode">{mode === 'demo' ? 'Use API' : 'Use demo'}</button></div><Link href={role === 'student' ? '/student/notifications' : role === 'admin' ? '/admin/settings' : '/recruiter/company'} className="top-icon" aria-label="Notifications or settings" data-testid="link-top-utility"><Bell size={18} /></Link><div className="avatar avatar-blue">{role === 'student' ? 'AM' : role === 'recruiter' ? 'LR' : 'PO'}</div></div></header>
-      <div className="content-area">{mode === 'api' && <div className="api-banner" role="status"><ShieldAlert size={18} /><div><b>API mode is not connected</b><span>PlaceMate has no agreed API contract yet. No API request was made and demo records are hidden.</span></div><button type="button" className="text-action" onClick={() => setMode('demo')} data-testid="button-return-demo">Return to demo</button></div>}{children}</div>
+      <div className="content-area">{mode === 'api' && <div className="api-banner" role="status"><ShieldAlert size={18} /><div><b>Live database mode</b><span>Pages in this workspace load from the authenticated PlaceMate API.</span></div><button type="button" className="text-action" onClick={() => setMode('demo')} data-testid="button-return-demo">Return to demo</button></div>}{logoutError && <div className="callout" role="alert">{logoutError}</div>}{children}</div>
     </main>
   </div>;
 }
@@ -108,19 +168,239 @@ function Screen({ route }: { route: typeof routeMeta[number] }) {
   const pm = usePM();
   const [, setLocation] = useLocation();
   const params = useParams<{ id?: string }>();
-  if (route.role && route.role !== pm.role) return <div className="standalone-state"><ShieldAlert size={28} /><h1>That workspace is restricted</h1><p>This browser role preview is not real authorization. Choose the matching demo role to explore this screen.</p><button className="button button-primary" onClick={() => setLocation('/unauthorized')} data-testid="button-view-unauthorized">View access details</button></div>;
-  if (['landing', 'login', 'register', 'unauthorized'].includes(route.kind)) return <PublicPage kind={route.kind} />;
-  if (pm.mode === 'api') return <div className="api-empty page-enter"><span className="api-icon"><ShieldAlert size={24} /></span><h1>{route.title}</h1><p>API contract required before this screen can load live records. Demo data is intentionally not shown in API mode.</p><button className="button button-secondary" onClick={() => pm.setMode('demo')} data-testid="button-enable-demo">Switch to clearly labeled demo data</button></div>;
+  useEffect(() => {
+    if (pm.mode === 'api' && (route.role === 'student' || route.role === 'admin') && !pm.authLoading && !pm.auth) {
+      setLocation(route.role === 'admin' ? '/admin/login' : '/login');
+    }
+  }, [pm.mode, pm.authLoading, pm.auth, route.role, setLocation]);
+  if (pm.mode === 'demo' && route.role && route.role !== pm.role) return <div className="standalone-state"><ShieldAlert size={28} /><h1>That workspace is restricted</h1><p>This browser role preview is not real authorization. Choose the matching demo role to explore this screen.</p><button className="button button-primary" onClick={() => setLocation('/unauthorized')} data-testid="button-view-unauthorized">View access details</button></div>;
+  if (['landing', 'login', 'register', 'admin-login', 'unauthorized'].includes(route.kind)) return route.kind === 'admin-login'
+    ? <AdminLoginPage onLogin={(user, csrf) => { pm.setSession(user, null, csrf); pm.setMode('api'); }} />
+    : <PublicPage kind={route.kind} />;
+  if (pm.mode === 'api') {
+    if (pm.authLoading) return <div className="standalone-state" role="status">Restoring your secure session…</div>;
+    if (!pm.auth) return <div className="standalone-state">Redirecting to sign in…</div>;
+    if (route.role === 'admin' && pm.auth.role !== 'admin') return <div className="standalone-state"><h1>Administrator access required</h1><p>This account does not have administrator permissions.</p><button className="button button-secondary" onClick={() => setLocation('/admin/login')}>Sign in as administrator</button></div>;
+    if (route.role === 'student' && pm.auth.role !== 'student') return <div className="standalone-state"><h1>Student access required</h1><p>This account cannot access the student workspace.</p></div>;
+    if (route.role === 'admin') return <AdminWorkspacePage kind={route.kind} studentId={params.id || ''} />;
+    if (route.role !== 'student') return <div className="api-empty page-enter"><h1>{route.title}</h1><p>Live recruiter workflows are not available yet. Demo data remains available separately.</p><button className="button button-secondary" onClick={() => pm.setMode('demo')}>Switch to demo workspace</button></div>;
+    return <ApiStudentPage route={route} id={params.id || ''} />;
+  }
   return <WorkspacePage route={route} id={params.id || ''} />;
 }
 
 function PublicPage({ kind }: { kind: string }) {
-  const { setRole } = usePM(); const [, setLocation] = useLocation();
+  const { setRole, mode, setMode } = usePM(); const [, setLocation] = useLocation();
   const [role, setLocalRole] = useState<Role>('student');
   const enter = (next: Role, destination?: string) => { setRole(next); setLocation(destination || nav[next][0].path); };
   if (kind === 'unauthorized') return <div className="auth-layout"><Brand /><section className="auth-card"><span className="auth-symbol"><ShieldAlert size={25} /></span><p className="eyebrow">ACCESS CONTROL</p><h1>Workspace unavailable</h1><p>Your selected demo role does not match this screen. Role previews demonstrate navigation only; they are not real authorization.</p><button className="button button-primary button-wide" onClick={() => setLocation('/')} data-testid="button-go-home">Return to PlaceMate</button></section></div>;
-  if (kind === 'login' || kind === 'register') return <div className="auth-layout"><Brand /><section className="auth-card"><Link href="/" className="back-link" data-testid="link-back-home"><ArrowLeft size={16} /> Back to overview</Link><p className="eyebrow">{kind === 'login' ? 'DEMO ACCESS' : 'GET STARTED'}</p><h1>{kind === 'login' ? 'Welcome back' : 'Create a demo account'}</h1><p className="auth-intro">{kind === 'login' ? 'Explore the placement workspace with one of the sample roles.' : 'Registration is represented as a role preview in this frontend demo.'}</p><label className="field-label" htmlFor="auth-role">Choose your workspace</label><select className="input" id="auth-role" value={role} onChange={e => setLocalRole(e.target.value as Role)} data-testid="select-auth-role"><option value="student">Student · Aarav Mehta</option><option value="recruiter">Recruiter · Leena Rao</option><option value="admin">Placement office</option></select><label className="field-label" htmlFor="auth-email">Email address</label><input className="input" id="auth-email" type="email" defaultValue={role === 'student' ? 'aarav.mehta@northstar.edu' : role === 'recruiter' ? 'leena@northstarsystems.example' : 'placement@northstar.edu'} data-testid="input-auth-email" /><label className="field-label" htmlFor="auth-password">Password</label><input className="input" id="auth-password" type="password" defaultValue="demo-access" data-testid="input-auth-password" /><button className="button button-primary button-wide" onClick={() => enter(role)} data-testid="button-auth-submit">{kind === 'login' ? 'Continue to demo' : 'Create demo workspace'} <ArrowRight size={16} /></button><div className="demo-caveat">Demo access only. Credentials are not verified and no account is created.</div><p className="auth-switch">{kind === 'login' ? 'New to PlaceMate?' : 'Already exploring?'} <Link href={kind === 'login' ? '/register' : '/login'} data-testid="link-auth-switch">{kind === 'login' ? 'Register' : 'Sign in'}</Link></p></section><div className="auth-foot">PlaceMate · Campus careers, in one place</div></div>;
+  if (kind === 'login' || kind === 'register') return mode === 'api'
+    ? <RealAuthForm kind={kind} />
+    : <div className="auth-layout"><Brand /><section className="auth-card"><Link href="/" className="back-link" data-testid="link-back-home"><ArrowLeft size={16} /> Back to overview</Link><p className="eyebrow">DEMO ACCESS</p><h1>{kind === 'login' ? 'Welcome back' : 'Create a demo account'}</h1><p className="auth-intro">{kind === 'login' ? 'Explore the placement workspace with one of the sample roles.' : 'Registration is represented as a role preview in this frontend demo.'}</p><label className="field-label" htmlFor="auth-role">Choose your workspace</label><select className="input" id="auth-role" value={role} onChange={e => setLocalRole(e.target.value as Role)} data-testid="select-auth-role"><option value="student">Student · Aarav Mehta</option><option value="recruiter">Recruiter · Leena Rao</option><option value="admin">Placement office</option></select><label className="field-label" htmlFor="auth-email">Email address</label><input className="input" id="auth-email" type="email" defaultValue={role === 'student' ? 'aarav.mehta@northstar.edu' : role === 'recruiter' ? 'leena@northstarsystems.example' : 'placement@northstar.edu'} data-testid="input-auth-email" /><label className="field-label" htmlFor="auth-password">Password</label><input className="input" id="auth-password" type="password" defaultValue="demo-access" data-testid="input-auth-password" /><button className="button button-primary button-wide" onClick={() => enter(role)} data-testid="button-auth-submit">{kind === 'login' ? 'Continue to demo' : 'Create demo workspace'} <ArrowRight size={16} /></button><div className="demo-caveat">Demo access only. Credentials are not verified and no account is created.</div><p className="auth-switch">{kind === 'login' ? 'New to PlaceMate?' : 'Already exploring?'} <Link href={kind === 'login' ? '/register' : '/login'} data-testid="link-auth-switch">{kind === 'login' ? 'Register' : 'Sign in'}</Link></p><button className="text-action" type="button" onClick={() => setMode('api')}>Use a real student account</button><p className="auth-switch"><Link href="/admin/login">Administrator sign in</Link></p></section><div className="auth-foot">PlaceMate · Campus careers, in one place</div></div>;
   return <div className="landing page-enter"><header className="landing-nav"><Brand /><div className="landing-nav-actions"><span className="landing-demo"><span className="live-dot" /> Demo workspace</span><Link href="/login" className="button button-outline" data-testid="link-login">Sign in</Link><Link href="/register" className="button button-primary" data-testid="link-register">Open demo <ArrowRight size={15} /></Link></div></header><section className="landing-hero"><div className="hero-copy"><p className="eyebrow"><span className="live-dot" /> PLACEMENT INTELLIGENCE, CONNECTED</p><h1>Every placement,<br /><em>in perspective.</em></h1><p className="hero-lede">One considered workspace for students finding their next role, recruiters building a stronger pipeline, and placement teams seeing the whole picture.</p><div className="hero-actions"><Link href="/login" className="button button-primary button-large" data-testid="link-explore-demo">Explore the demo <ArrowRight size={17} /></Link><a href="#workspaces" className="hero-secondary" data-testid="link-see-workspaces">See the workspaces <ArrowDown size={16} /></a></div><div className="hero-proof"><div className="proof-avatars"><span>AM</span><span>LR</span><span>PO</span></div><div><b>One connected campus workflow</b><small>Clearly labeled synthetic demo records</small></div></div></div><div className="hero-visual"><div className="visual-grid" /><div className="dashboard-preview"><div className="preview-top"><div className="preview-brand"><span className="brand-mark small"><GraduationCap size={15} /></span> placemate</div><span className="preview-tag">DEMO DATA</span></div><div className="preview-greeting"><small>STUDENT OVERVIEW</small><b>Good morning, Aarav</b><span>Here’s where your search stands.</span></div><div className="preview-metrics"><div><small>Applications</small><b>3</b><span>Across 3 companies</span></div><div><small>In progress</small><b>2</b><span>One upcoming interview</span></div></div><div className="preview-chart"><div className="chart-ring"><span>03</span></div><div className="chart-legend"><span><i className="legend-indigo" /> In review <b>1</b></span><span><i className="legend-green" /> Interview <b>1</b></span><span><i className="legend-orange" /> Waiting <b>1</b></span></div></div><div className="preview-row"><span className="company-mark">N</span><div><b>Associate Software Engineer</b><small>Northstar Systems</small></div><span className="status status-blue">Interview scheduled</span></div></div><div className="visual-note"><span className="live-dot" /> Connected from first application to final outcome</div></div></section><section className="landing-strip"><span>BUILT FOR THE FULL PLACEMENT CYCLE</span><div><span><GraduationCap size={17} /> Students</span><span><Building2 size={17} /> Recruiters</span><span><Activity size={17} /> Placement teams</span></div></section><section className="workspaces-section" id="workspaces"><div className="section-heading"><p className="eyebrow">THREE PERSPECTIVES. ONE SHARED PICTURE.</p><h2>Built around the work<br />that actually gets done.</h2><p>Purpose-specific workflows share a consistent source of placement information.</p></div><div className="workspace-list">{[{ role: 'student' as Role, num: '01', title: 'For students', copy: 'Discover roles, keep applications moving, and prepare for the conversations ahead.', labels: 'Jobs · Application history · Interviews' }, { role: 'recruiter' as Role, num: '02', title: 'For recruiters', copy: 'Manage open roles and candidate progress without losing context across the hiring cycle.', labels: 'Job management · Candidate review · Hiring insights' }, { role: 'admin' as Role, num: '03', title: 'For placement teams', copy: 'Classify student cohorts, coordinate drives, and understand outcomes in one view.', labels: 'Student intelligence · Drives · Outcomes' }].map(item => <button key={item.role} className="workspace-row" onClick={() => enter(item.role)} data-testid={`button-open-${item.role}-workspace`}><span className="workspace-num">{item.num}</span><span className="workspace-copy"><b>{item.title}</b><small>{item.copy}</small><em>{item.labels}</em></span><span className="workspace-arrow"><ArrowRight size={19} /></span></button>)}</div></section><section className="data-note"><span className="note-symbol"><ShieldAlert size={20} /></span><div><b>A transparent demo, by design.</b><p>Every dashboard and chart is derived from one fictional, locally editable dataset. Eligibility and resume review are not presented as verified server decisions. API mode stays separate until a contract is available.</p></div><Link href="/login" data-testid="link-open-demo-note">Open demo <ArrowRight size={16} /></Link></section><footer className="landing-footer"><Brand /><span>Northstar University · Placement workspace demo · 2026</span><Link href="/login" data-testid="link-footer-demo">Explore workspace</Link></footer></div>;
+}
+
+function RealAuthForm({ kind }: { kind: 'login' | 'register' }) {
+  const { setSession, authRestoreError } = usePM();
+  const [, setLocation] = useLocation();
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError('');
+    setBusy(true);
+    const data = new FormData(event.currentTarget);
+    const password = String(data.get('password') || '');
+    if (kind === 'register' && password !== String(data.get('confirmPassword') || '')) {
+      setError('Passwords do not match.');
+      setBusy(false);
+      return;
+    }
+    try {
+      const body = kind === 'login'
+        ? { email: String(data.get('email')), password }
+        : {
+            fullName: String(data.get('fullName')),
+            email: String(data.get('email')),
+            password,
+            course: String(data.get('course')),
+            department: String(data.get('department')),
+            graduationYear: Number(data.get('graduationYear')),
+          };
+      const result = await apiRequest<{ user: AuthUser; student?: ApiStudent; csrfToken: string }>(
+        `/auth/${kind}`,
+        { method: 'POST', body: JSON.stringify(body) },
+      );
+      if (result.student) {
+        setSession(result.user, result.student, result.csrfToken);
+      } else {
+        const current = await apiRequest<{ user: AuthUser; student: ApiStudent; csrfToken: string | null }>('/auth/me');
+        setSession(current.user, current.student, current.csrfToken);
+      }
+      setLocation('/student');
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to authenticate.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <div className="auth-layout"><Brand /><section className="auth-card">
+    <Link href="/" className="back-link" data-testid="link-back-home"><ArrowLeft size={16} /> Back to overview</Link>
+    <p className="eyebrow">LIVE STUDENT ACCOUNT</p>
+    <h1>{kind === 'login' ? 'Welcome back' : 'Create your account'}</h1>
+    <p className="auth-intro">{kind === 'login' ? 'Sign in securely to continue to your placement workspace.' : 'Your profile and permanent student number are stored by PlaceMate.'}</p>
+    {authRestoreError && <p className="form-error" role="status">{authRestoreError}</p>}
+    <form onSubmit={submit}>
+      {kind === 'register' && <>
+        <label className="field-label" htmlFor="auth-name">Full name</label>
+        <input className="input" id="auth-name" name="fullName" autoComplete="name" required minLength={2} maxLength={120} />
+      </>}
+      <label className="field-label" htmlFor="auth-email">Email address</label>
+      <input className="input" id="auth-email" name="email" type="email" autoComplete="email" required maxLength={254} />
+      {kind === 'register' && <>
+        <div className="form-row">
+          <div><label className="field-label" htmlFor="auth-course">Course</label><input className="input" id="auth-course" name="course" required maxLength={100} /></div>
+          <div><label className="field-label" htmlFor="auth-department">Department</label><input className="input" id="auth-department" name="department" required maxLength={120} /></div>
+        </div>
+        <label className="field-label" htmlFor="auth-year">Graduation year (2000–2099)</label>
+        <input className="input" id="auth-year" name="graduationYear" type="number" min="2000" max="2099" required />
+      </>}
+      <label className="field-label" htmlFor="auth-password">Password</label>
+      <input className="input" id="auth-password" name="password" type="password" autoComplete={kind === 'login' ? 'current-password' : 'new-password'} required minLength={10} maxLength={72} />
+      {kind === 'register' && <>
+        <label className="field-label" htmlFor="auth-confirm-password">Confirm password</label>
+        <input className="input" id="auth-confirm-password" name="confirmPassword" type="password" autoComplete="new-password" required minLength={10} maxLength={72} />
+      </>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <button className="button button-primary button-wide" type="submit" disabled={busy} data-testid="button-auth-submit">{busy ? 'Please wait…' : kind === 'login' ? 'Sign in' : 'Create student account'} <ArrowRight size={16} /></button>
+    </form>
+    <p className="auth-switch">{kind === 'login' ? 'New to PlaceMate?' : 'Already registered?'} <Link href={kind === 'login' ? '/register' : '/login'} data-testid="link-auth-switch">{kind === 'login' ? 'Create account' : 'Sign in'}</Link></p>
+    {kind === 'login' && <p className="auth-switch"><Link href="/admin/login">Placement office sign in</Link></p>}
+    <button className="text-action" type="button" onClick={() => { localStorage.setItem('placemate-mode', 'demo'); window.location.reload(); }}>Switch to clearly labeled demo mode</button>
+  </section><div className="auth-foot">PlaceMate · Secure student account</div></div>;
+}
+
+function ApiStudentPage({ route, id }: { route: typeof routeMeta[number]; id: string }) {
+  const { student, auth, setSession } = usePM();
+  const [, setLocation] = useLocation();
+  const [jobs, setJobs] = useState<ApiJob[]>([]);
+  const [applications, setApplications] = useState<ApiApplication[]>([]);
+  const [selectedJob, setSelectedJob] = useState<ApiJob | null>(null);
+  const [profile, setProfile] = useState<ApiStudent | null>(student);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  const refresh = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      if (route.kind === 'jobs') {
+        const [jobResult, applicationResult] = await Promise.all([
+          apiRequest<{ jobs: ApiJob[] }>('/jobs'),
+          apiRequest<{ applications: ApiApplication[] }>('/applications/me'),
+        ]);
+        setJobs(jobResult.jobs);
+        setApplications(applicationResult.applications);
+      } else if (route.kind === 'job-detail') {
+        const [jobResult, applicationResult] = await Promise.all([
+          apiRequest<{ job: ApiJob }>(`/jobs/${encodeURIComponent(id)}`),
+          apiRequest<{ applications: ApiApplication[] }>('/applications/me'),
+        ]);
+        setSelectedJob(jobResult.job);
+        setApplications(applicationResult.applications);
+      } else if (route.kind === 'applications' || route.kind === 'student-home') {
+        const [apps, availableJobs] = await Promise.all([
+          apiRequest<{ applications: ApiApplication[] }>('/applications/me'),
+          apiRequest<{ jobs: ApiJob[] }>('/jobs'),
+        ]);
+        setApplications(apps.applications);
+        setJobs(availableJobs.jobs);
+      } else if (route.kind === 'profile') {
+        const result = await apiRequest<{ student: ApiStudent }>('/students/me');
+        setProfile(result.student);
+      } else {
+        setNotice('This student workflow is not part of the current live MVP.');
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to load live records.');
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { void refresh(); }, [route.kind, id]);
+
+  const apply = async (jobId: string) => {
+    setError('');
+    setNotice('');
+    try {
+      await apiRequest('/applications', { method: 'POST', body: JSON.stringify({ jobId }) });
+      setNotice('Application saved successfully.');
+      await refresh();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to submit application.');
+    }
+  };
+  const saveProfile = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!profile) return;
+    const data = new FormData(event.currentTarget);
+    try {
+      const result = await apiRequest<{ student: ApiStudent }>('/students/me', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          fullName: String(data.get('fullName')),
+          course: String(data.get('course')),
+          department: String(data.get('department')),
+          cgpa: Number(data.get('cgpa')),
+          skills: String(data.get('skills')).split(',').map(value => value.trim()).filter(Boolean),
+          interests: String(data.get('interests')).split(',').map(value => value.trim()).filter(Boolean),
+        }),
+      });
+      setProfile(result.student);
+      if (auth) setSession({ ...auth, fullName: result.student.fullName }, result.student);
+      setNotice('Profile saved.');
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to save profile.');
+    }
+  };
+
+  const heading = route.kind === 'student-home' ? 'Your placement journey'
+    : route.kind === 'jobs' ? 'Browse published jobs'
+    : route.kind === 'job-detail' ? 'Job details'
+    : route.kind === 'applications' ? 'Your applications'
+    : route.kind === 'profile' ? 'Your profile'
+    : route.title;
+  const applied = new Set(applications.map(application => application.jobId));
+  return <section className="page-enter">
+    <div className="page-heading"><div><p className="eyebrow">LIVE DATABASE</p><h1>{heading}</h1><p>{student?.studentNumber} · Class of {student?.graduationYear}</p></div></div>
+    {error && <div className="callout" role="alert"><ShieldAlert size={17} /><span>{error}</span></div>}
+    {notice && <div className="callout" role="status"><Check size={17} /><span>{notice}</span></div>}
+    {loading && <div className="standalone-state" role="status">Loading your saved PlaceMate records…</div>}
+    {!loading && route.kind === 'student-home' && <div className="metric-grid">
+      {[{ label: 'Applications', value: applications.length }, { label: 'Open jobs', value: jobs.length }, { label: 'In progress', value: applications.filter(item => ['Applied', 'Under Review', 'Shortlisted', 'Interview Scheduled'].includes(item.status)).length }, { label: 'Selected', value: applications.filter(item => item.status === 'Selected').length }].map(metric => <article className="metric-card" key={metric.label}><span className="metric-label">{metric.label}</span><b>{metric.value}</b><small>From your database account</small></article>)}
+      <section className="panel"><div className="panel-heading"><div><h2>Recent applications</h2><p>Saved application history</p></div><Link href="/student/applications" className="subtle-link">View all <ArrowRight size={15} /></Link></div>{applications.slice(0, 5).map(item => <p key={item.id}><b>{item.jobTitle}</b> · {item.company} · {item.status}</p>)}{applications.length === 0 && <Empty title="No applications yet" detail="Browse published jobs to get started." link="/student/jobs" linkText="Browse jobs" />}</section>
+    </div>}
+    {!loading && (route.kind === 'jobs' || route.kind === 'job-detail') && <div className="jobs-list">
+      {(route.kind === 'job-detail' && selectedJob ? [selectedJob] : jobs).map(job => <article className="job-card" key={job.id}>
+        <div className="company-mark">{job.company.slice(0, 1)}</div><div className="job-card-main"><Link className="job-title" href={`/student/jobs/${job.id}`}>{job.title}</Link><p>{job.company} · {job.location}</p><div className="job-tags"><span>{job.category}</span><span>Class of {job.year}</span><span>{job.courses.join(', ') || 'All courses'}</span><span>CGPA {job.minCgpa}+</span></div><p>{job.description}</p></div><div className="job-card-side"><b>₹{job.package} LPA</b><small>Apply by {new Date(job.deadline).toLocaleDateString()}</small><button className="button button-primary button-small" disabled={applied.has(job.id)} onClick={() => void apply(job.id)}>{applied.has(job.id) ? 'Applied' : 'Apply'}</button></div>
+      </article>)}
+      {route.kind === 'jobs' && jobs.length === 0 && <Empty title="No published jobs yet" detail="New roles will appear here when the placement team publishes them." />}
+      {route.kind === 'job-detail' && !selectedJob && !loading && <Empty title="Job not found" detail="This job is unavailable or not published." link="/student/jobs" linkText="Browse jobs" />}
+    </div>}
+    {!loading && route.kind === 'applications' && <div className="table-wrap"><table><thead><tr><th>Job</th><th>Company</th><th>Applied</th><th>Status</th></tr></thead><tbody>{applications.map(item => <tr key={item.id}><td>{item.jobTitle}</td><td>{item.company}</td><td>{new Date(item.date).toLocaleDateString()}</td><td>{item.status}</td></tr>)}</tbody></table>{applications.length === 0 && <Empty title="No applications yet" detail="Your applications will be saved here." link="/student/jobs" linkText="Browse jobs" />}</div>}
+    {!loading && route.kind === 'profile' && profile && <form className="form-page panel" onSubmit={saveProfile}>
+      <label className="field-label">Permanent student number</label><input className="input" value={profile.studentNumber} readOnly />
+      <label className="field-label" htmlFor="profile-name">Full name</label><input className="input" id="profile-name" name="fullName" defaultValue={profile.fullName} required />
+      <div className="form-row"><div><label className="field-label" htmlFor="profile-course">Course</label><input className="input" id="profile-course" name="course" defaultValue={profile.course} required /></div><div><label className="field-label" htmlFor="profile-department">Department</label><input className="input" id="profile-department" name="department" defaultValue={profile.department} required /></div></div>
+      <label className="field-label">Graduation year (permanent)</label><input className="input" value={profile.graduationYear} readOnly />
+      <label className="field-label" htmlFor="profile-cgpa">CGPA</label><input className="input" id="profile-cgpa" name="cgpa" type="number" min="0" max="10" step="0.01" defaultValue={profile.cgpa} required />
+      <label className="field-label" htmlFor="profile-skills">Skills (comma separated)</label><input className="input" id="profile-skills" name="skills" defaultValue={profile.skills.join(', ')} />
+      <label className="field-label" htmlFor="profile-interests">Interests (comma separated)</label><input className="input" id="profile-interests" name="interests" defaultValue={profile.interests.join(', ')} />
+      <button className="button button-primary" type="submit">Save profile</button>
+    </form>}
+    {!loading && !['student-home', 'jobs', 'job-detail', 'applications', 'profile'].includes(route.kind) && <div className="standalone-state">{notice}</div>}
+  </section>;
 }
 function Brand() { return <Link href="/" className="brand brand-public" data-testid="link-brand-home"><span className="brand-mark"><GraduationCap size={20} /></span><span>placemate<span className="brand-period">.</span></span></Link>; }
 

@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "buildCommand": "npx pnpm install --frozen-lockfile && node artifacts/api-server/build.mjs && npx pnpm --filter @workspace/placemate run build",
+  "outputDirectory": "frontend/dist/public",
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 30
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index.js" },
+    { "source": "/((?!api).*)", "destination": "/index.html" }
+  ]
+}

@@ -10,6 +10,10 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: authentication
+    description: Authentication operations
+  - name: administration
+    description: Administrator-only read operations
 paths:
   /healthz:
     get:
@@ -24,7 +28,154 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /auth/admin/login:
+    post:
+      operationId: administratorLogin
+      tags: [authentication]
+      summary: Sign in as an existing administrator
+      description: Public administrator registration is not available.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminLoginRequest"
+      responses:
+        "200":
+          description: Administrator session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminLoginResponse"
+        "401":
+          description: Invalid credentials
+  /admin/stats:
+    get:
+      operationId: getAdminStats
+      tags: [administration]
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Database-backed placement statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminStatsResponse"
+        "401":
+          description: Authentication required
+        "403":
+          description: Administrator role required
+  /admin/students:
+    get:
+      operationId: listAdminStudents
+      tags: [administration]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+        - { name: search, in: query, schema: { type: string, maxLength: 120 } }
+        - { name: year, in: query, schema: { type: integer, minimum: 2000, maximum: 2099 } }
+        - { name: course, in: query, schema: { type: string, maxLength: 100 } }
+        - { name: minCgpa, in: query, schema: { type: number, minimum: 0, maximum: 10 } }
+        - { name: maxCgpa, in: query, schema: { type: number, minimum: 0, maximum: 10 } }
+        - { name: status, in: query, schema: { type: string, enum: [Selected, Shortlisted, In Progress, Not Applied, Rejected] } }
+      responses:
+        "200":
+          description: Filtered, paginated student directory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminStudentDirectoryResponse"
+        "400":
+          description: Invalid filters
+        "401":
+          description: Authentication required
+        "403":
+          description: Administrator role required
+  /admin/students/{id}:
+    get:
+      operationId: getAdminStudent
+      tags: [administration]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Student profile and application status history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminStudentDetailResponse"
+        "401":
+          description: Authentication required
+        "403":
+          description: Administrator role required
+        "404":
+          description: Student not found
+  /admin/recruiters:
+    get:
+      operationId: listAdminRecruiters
+      tags: [administration]
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Recruiter profiles, account presence, and associated job counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminRecruitersResponse"
+  /admin/companies:
+    get:
+      operationId: listAdminCompanies
+      tags: [administration]
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Companies with recruiter and job counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminCompaniesResponse"
+  /admin/jobs:
+    get:
+      operationId: listAdminJobs
+      tags: [administration]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+        - { name: companyId, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { type: string, enum: [draft, published, closed] } }
+      responses:
+        "200":
+          description: Filtered, paginated jobs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminJobsResponse"
+  /admin/applications:
+    get:
+      operationId: listAdminApplications
+      tags: [administration]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+        - { name: jobId, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { type: string, enum: [Applied, Under Review, Shortlisted, Interview Scheduled, Waiting for Result, Selected, Rejected, Withdrawn] } }
+      responses:
+        "200":
+          description: Filtered, paginated application records and status totals
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminApplicationsResponse"
 components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: placemate_session
   schemas:
     HealthStatus:
       type: object
@@ -33,4 +184,77 @@ components:
           type: string
       required:
         - status
-
+    AdminLoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        password: { type: string, minLength: 1, maxLength: 72 }
+    AdminLoginResponse:
+      type: object
+      required: [user, csrfToken]
+      properties:
+        user:
+          type: object
+          required: [id, email, role, fullName]
+          properties:
+            id: { type: string, format: uuid }
+            email: { type: string, format: email }
+            role: { type: string, const: admin }
+            fullName: { type: string }
+        csrfToken: { type: string }
+    AdminStatsResponse:
+      type: object
+      required: [stats]
+      properties:
+        stats: { type: object, additionalProperties: true }
+    AdminStudentDirectoryResponse:
+      type: object
+      required: [students, page, pageSize, total, pages, filters]
+      properties:
+        students: { type: array, items: { $ref: "#/components/schemas/AdminRecord" } }
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer }
+        pages: { type: integer }
+        filters: { type: object, additionalProperties: true }
+    AdminStudentDetailResponse:
+      type: object
+      required: [student, applications]
+      properties:
+        student: { $ref: "#/components/schemas/AdminRecord" }
+        applications: { type: array, items: { $ref: "#/components/schemas/AdminRecord" } }
+    AdminRecruitersResponse:
+      type: object
+      required: [recruiters]
+      properties:
+        recruiters: { type: array, items: { $ref: "#/components/schemas/AdminRecord" } }
+    AdminCompaniesResponse:
+      type: object
+      required: [companies]
+      properties:
+        companies: { type: array, items: { $ref: "#/components/schemas/AdminRecord" } }
+    AdminJobsResponse:
+      type: object
+      required: [jobs, companies, page, pageSize, total, pages]
+      properties:
+        jobs: { type: array, items: { $ref: "#/components/schemas/AdminRecord" } }
+        companies: { type: array, items: { $ref: "#/components/schemas/AdminRecord" } }
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer }
+        pages: { type: integer }
+    AdminApplicationsResponse:
+      type: object
+      required: [applications, page, pageSize, total, pages, counts, jobs]
+      properties:
+        applications: { type: array, items: { $ref: "#/components/schemas/AdminRecord" } }
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer }
+        pages: { type: integer }
+        counts: { type: object, additionalProperties: { type: integer } }
+        jobs: { type: array, items: { $ref: "#/components/schemas/AdminRecord" } }
+    AdminRecord:
+      type: object
+      additionalProperties: true
